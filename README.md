@@ -1,13 +1,19 @@
 # text-to-png
 
-A [Claude Code / Claude Skill](https://docs.claude.com/en/docs/claude-code/skills) that renders plain text, code snippets, terminal output, or ASCII art into a PNG image using a monospace font.
+A [Claude Code / Claude Skill](https://docs.claude.com/en/docs/claude-code/skills) with two related tools:
+
+1. **Rasterize** text, code, terminal output, or ASCII art into a PNG exactly as typed, using a correctly-discovered monospace font.
+2. **Redraw** an ASCII box-and-arrow diagram as a real flowchart — clean rounded boxes, real arrows, proper fan-out/fan-in branching — instead of just a screenshot of the ASCII.
+
+![Example flowchart output](./assets/flowchart-example.png)
 
 ## What it does
 
 - Renders any text to a PNG with correct monospace alignment (important for ASCII art and terminal output, which break under proportional fonts).
 - Auto-discovers a monospace font already installed on your system (Consolas/Courier on Windows, Menlo/Monaco on macOS, DejaVu/Liberation Mono on Linux) — no bundled font required.
 - Ships with four color themes (`default`, `terminal`, `dark`, `amber`) plus fully custom `--fg`/`--bg` colors.
-- Auto-sizes the output image to fit the text exactly.
+- Turns ASCII flowcharts/architecture diagrams into properly drawn diagrams (rounded boxes, wrapped bullet text, branching arrows with side labels), driven by a small JSON spec rather than a screenshot of the source characters.
+- Auto-sizes every output image to fit its content exactly.
 
 ## Install
 
@@ -19,7 +25,7 @@ Download [`text-to-png.skill`](./text-to-png.skill) (or clone this repo) and eit
 
 ### Standalone (no Claude required)
 
-The skill is just a Python script — you can use it directly:
+Both tools are just Python scripts — you can use them directly:
 
 ```bash
 pip install Pillow
@@ -27,6 +33,8 @@ python text-to-png/scripts/render_text_png.py --text "Hello, world!" --output he
 ```
 
 ## Usage
+
+### 1. Rasterizing text as-is (`render_text_png.py`)
 
 ```bash
 # Plain text
@@ -42,8 +50,6 @@ python scripts/render_text_png.py --file traceback.txt --output traceback.png --
 python scripts/render_text_png.py --text "BUILD PASSING" --fg "#00ff00" --bg "#000000" --output banner.png
 ```
 
-### Options
-
 | Flag | Description | Default |
 |---|---|---|
 | `--text` / `--file` | Text to render, or a path to a text file (mutually exclusive, one required) | — |
@@ -55,6 +61,40 @@ python scripts/render_text_png.py --text "BUILD PASSING" --fg "#00ff00" --bg "#0
 | `--padding` | Padding in pixels around the text | `20` |
 | `--line-spacing` | Line height multiplier | `1.0` |
 | `--transparent` | Transparent background (ignores `--bg`) | off |
+
+### 2. Redrawing an ASCII diagram as a flowchart (`render_flowchart.py`)
+
+Takes a JSON description of the diagram's structure — not the raw ASCII — and draws it with real boxes and arrows, including fan-out (one box splitting into several) and fan-in (several merging back into one).
+
+```bash
+python scripts/render_flowchart.py --spec spec.json --output flowchart.png
+# or inline:
+python scripts/render_flowchart.py --spec-json '{"rows": [...]}' --output flowchart.png
+```
+
+Spec format:
+
+```json
+{
+  "rows": [
+    {"nodes": [{"type": "plain", "lines": ["New user message"]}]},
+    {"nodes": [{"type": "box", "title": "Retrieval layer", "bullets": ["fact one", "fact two"]}]},
+    {"label": "delegates to one or more workers", "nodes": [
+        {"type": "box", "title": "worker A", "subtitle": "(own guardrail)"},
+        {"type": "box", "title": "worker B", "subtitle": "(own guardrail)"}
+    ]},
+    {"label": "results assembled", "nodes": [{"type": "box", "title": "done"}]}
+  ]
+}
+```
+
+- Rows are drawn top to bottom, connected by arrows automatically.
+- A row's `"label"` annotates the arrow(s) leading into it (for side-notes like "at end of session, not per turn").
+- Multiple nodes in a row auto fan-out (if the previous row had one node) or fan-in (if the next row has one node) — this is what produces branching diagrams like an orchestrator delegating to parallel workers.
+- Node type `"plain"`: borderless bold centered text (`"lines"`: list of strings).
+- Node type `"box"`: a rounded rectangle with a bold `"title"`, plus either `"subtitle"` (one centered line) or `"bullets"` (a wrapped, left-aligned list) — not both.
+
+The example image above was generated from this tool.
 
 ## License
 
