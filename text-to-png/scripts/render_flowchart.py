@@ -2,8 +2,8 @@
 """Render a simple box-and-arrow flowchart (described as JSON) into a PNG.
 
 This is for turning an ASCII diagram into a *real* diagram — clean rounded
-boxes, straight arrows, proper fan-out/fan-in branching — as opposed to
-render_text_png.py, which just rasterizes text/ASCII art as-is.
+boxes, straight arrows, proper branching — as opposed to render_text_png.py,
+which just rasterizes text/ASCII art as-is.
 
 Spec format (pass via --spec <file.json> or --spec-json '<inline json>'):
 
@@ -19,16 +19,29 @@ Spec format (pass via --spec <file.json> or --spec-json '<inline json>'):
   ]
 }
 
-Each row is drawn top to bottom. A row's "label" annotates the arrow(s)
-leading INTO that row from the previous one. Rows can have one node
-(straight flow) or several (an even fan-out from a single-node row, or a
-fan-in into a single-node row).
+Each entry in "rows" is either:
+  - a normal row: {"nodes": [...], "label": "optional, annotates the arrow into this row"}.
+    One node = straight flow. Several nodes = fan-out (if the previous row had
+    one node) or fan-in (if the next row has one node) — for branches that
+    reconverge onto a shared next step.
+  - a branch point (does NOT reconverge — each branch is independent from
+    here on, e.g. a guardrail that either terminates the flow or continues
+    down a completely different path):
+      {"type": "branch", "branches": [
+          {"label": "blocked", "rows": [...]},
+          {"label": "safe", "rows": [...]}
+      ]}
+    A branch must be the LAST entry in its "rows" list (nothing reconverges
+    after it). Each branch's own "rows" list follows the exact same rules
+    recursively, so a branch can itself end in another branch.
 
 Node types:
   - "plain": borderless bold centered text. "lines": list of strings (one per line).
-  - "box": rounded rectangle. "title" (bold header) plus EITHER "subtitle"
-    (a single centered regular-weight line) OR "bullets" (a left-aligned,
-    word-wrapped bullet list) — not both.
+  - "box": rounded rectangle. "title" (bold header) plus AT MOST ONE of:
+    "subtitle" (a single centered regular-weight line), "bullets" (a
+    left-aligned, word-wrapped bullet list), or "paragraph" (a left-aligned,
+    word-wrapped block of text with no bullet marker, for a plain descriptive
+    blurb under the title).
 """
 
 import argparse
@@ -36,10 +49,6 @@ import json
 import sys
 
 from PIL import Image, ImageDraw, ImageFont
-
-FONT_REG = None
-FONT_BOLD = None
-FONT_ITALIC = None
 
 FONT_CANDIDATES = {
     "regular": [
@@ -79,10 +88,13 @@ ANNOT_COLOR = "#7a7a7a"
 LINE_COLOR = "#33507a"
 
 PAD_X, PAD_Y = 20, 16
-ROW_GAP = 60          # vertical space between rows, for connector + label
-NODE_GAP = 40         # horizontal space between sibling nodes in a fan row
+ROW_GAP = 60           # vertical space between rows, for connector + label
+NODE_GAP = 40          # horizontal space between sibling nodes in a fan row
+COLUMN_GAP = 60         # horizontal space between sibling branch columns
 MARGIN = 40
-LABEL_CLEARANCE = 22  # extra vertical room reserved when a row has a label
+LABEL_CLEARANCE = 22    # extra vertical room reserved when a row has a label
+BRANCH_STEM = 26        # vertical drop from parent to the branch bar
+BRANCH_ARROW_DROP = 30  # vertical drop from the branch bar into each column
 
 
 def wrap_text(draw, text, font, max_width):
@@ -106,18 +118,24 @@ def text_w(draw, text, font):
     return bbox[2] - bbox[0]
 
 
+class Fonts:
+    def __init__(self):
+        self.title = find_font("bold", 18)
+        self.sub = find_font("regular", 15)
+        self.body = find_font("regular", 15)
+        self.plain = find_font("bold", 20)
+        self.annot = find_font("italic", 15)
+
+
 class Node:
     def __init__(self, spec):
         self.spec = spec
         self.type = spec["type"]
-        self.width = 0
-        self.height = 0
-        self.draw_lines = []  # list of (text, font_kind, align) for boxes; unused for plain
 
-    def measure(self, draw, title_font, sub_font, bullet_font):
+    def measure(self, draw, fonts):
         if self.type == "plain":
             lines = self.spec["lines"]
-            widths = [text_w(draw, line, title_font) for line in lines]
+            widths = [text_w(draw, line, fonts.plain) for line in lines]
             self.width = max(widths) + PAD_X
             self.height = len(lines) * 28
             self._plain_lines = lines
@@ -126,33 +144,44 @@ class Node:
         title = self.spec["title"]
         subtitle = self.spec.get("subtitle")
         bullets = self.spec.get("bullets")
+        paragraph = self.spec.get("paragraph")
+
+        self._bullets = None
+        self._paragraph_lines = None
 
         if bullets:
             max_content_w = 420
-            title_w = text_w(draw, title, title_font)
+            title_w = text_w(draw, title, fonts.title)
             wrapped = []
             for b in bullets:
-                wrapped.extend(wrap_text(draw, "\u2022 " + b, bullet_font, max_content_w))
-            bullet_w = max((text_w(draw, line, bullet_font) for line in wrapped), default=0)
-            self.width = max(title_w, bullet_w, 260) + PAD_X * 2
+                wrapped.extend(wrap_text(draw, "\u2022 " + b, fonts.body, max_content_w))
+            body_w = max((text_w(draw, line, fonts.body) for line in wrapped), default=0)
+            self.width = max(title_w, body_w, 260) + PAD_X * 2
             self.height = PAD_Y * 2 + 26 + 8 + 22 * len(wrapped)
             self._bullets = wrapped
+        elif paragraph:
+            max_content_w = 340
+            title_w = text_w(draw, title, fonts.title)
+            wrapped = wrap_text(draw, paragraph, fonts.body, max_content_w)
+            body_w = max((text_w(draw, line, fonts.body) for line in wrapped), default=0)
+            self.width = max(title_w, body_w, 260) + PAD_X * 2
+            self.height = PAD_Y * 2 + 26 + 8 + 20 * len(wrapped)
+            self._paragraph_lines = wrapped
         else:
-            title_w = text_w(draw, title, title_font)
-            sub_w = text_w(draw, subtitle, sub_font) if subtitle else 0
+            title_w = text_w(draw, title, fonts.title)
+            sub_w = text_w(draw, subtitle, fonts.sub) if subtitle else 0
             self.width = max(title_w, sub_w, 160) + PAD_X * 2 + 20
             self.height = PAD_Y * 2 + 26 + (24 if subtitle else 0)
-            self._bullets = None
 
         return self.width, self.height
 
 
-def draw_node(draw, node, cx, top, title_font, sub_font, bullet_font, box_title_font):
+def draw_node(draw, node, cx, top, fonts):
     if node.type == "plain":
         y = top
         for line in node._plain_lines:
-            w = text_w(draw, line, box_title_font)
-            draw.text((cx - w / 2, y), line, font=box_title_font, fill=TEXT_COLOR)
+            w = text_w(draw, line, fonts.plain)
+            draw.text((cx - w / 2, y), line, font=fonts.plain, fill=TEXT_COLOR)
             y += 28
         return
 
@@ -162,22 +191,27 @@ def draw_node(draw, node, cx, top, title_font, sub_font, bullet_font, box_title_
 
     title = node.spec["title"]
     if node._bullets is not None:
-        tw = text_w(draw, title, title_font)
-        draw.text((x0 + PAD_X, y0 + PAD_Y), title, font=title_font, fill=TEXT_COLOR)
+        draw.text((x0 + PAD_X, y0 + PAD_Y), title, font=fonts.title, fill=TEXT_COLOR)
         ty = y0 + PAD_Y + 26 + 8
         for line in node._bullets:
-            draw.text((x0 + PAD_X, ty), line, font=bullet_font, fill=SUB_COLOR)
+            draw.text((x0 + PAD_X, ty), line, font=fonts.body, fill=SUB_COLOR)
             ty += 22
+    elif node._paragraph_lines is not None:
+        draw.text((x0 + PAD_X, y0 + PAD_Y), title, font=fonts.title, fill=TEXT_COLOR)
+        ty = y0 + PAD_Y + 26 + 8
+        for line in node._paragraph_lines:
+            draw.text((x0 + PAD_X, ty), line, font=fonts.body, fill=SUB_COLOR)
+            ty += 20
     else:
         subtitle = node.spec.get("subtitle")
         if subtitle:
-            tw = text_w(draw, title, title_font)
-            draw.text((cx - tw / 2, y0 + PAD_Y), title, font=title_font, fill=TEXT_COLOR)
-            sw = text_w(draw, subtitle, sub_font)
-            draw.text((cx - sw / 2, y0 + PAD_Y + 26), subtitle, font=sub_font, fill=SUB_COLOR)
+            tw = text_w(draw, title, fonts.title)
+            draw.text((cx - tw / 2, y0 + PAD_Y), title, font=fonts.title, fill=TEXT_COLOR)
+            sw = text_w(draw, subtitle, fonts.sub)
+            draw.text((cx - sw / 2, y0 + PAD_Y + 26), subtitle, font=fonts.sub, fill=SUB_COLOR)
         else:
-            tw = text_w(draw, title, title_font)
-            draw.text((cx - tw / 2, y0 + (node.height - 20) / 2), title, font=title_font, fill=TEXT_COLOR)
+            tw = text_w(draw, title, fonts.title)
+            draw.text((cx - tw / 2, y0 + (node.height - 20) / 2), title, font=fonts.title, fill=TEXT_COLOR)
 
 
 def arrow_down(draw, x, y_top, y_bottom):
@@ -185,9 +219,9 @@ def arrow_down(draw, x, y_top, y_bottom):
     draw.polygon([(x - 7, y_bottom - 9), (x + 7, y_bottom - 9), (x, y_bottom)], fill=LINE_COLOR)
 
 
-def stem_with_label(draw, x, y_top, y_bottom, label, annot_font, side_label=False):
-    """Draw a vertical line from y_top to y_bottom, leaving a gap for the
-    label (if any) so text never sits on top of the line."""
+def stem_with_label(draw, x, y_top, y_bottom, label, fonts, side_label=False):
+    """Vertical line from y_top to y_bottom, leaving a gap for the label (if
+    any) so text never sits on top of the line."""
     if not label:
         draw.line([(x, y_top), (x, y_bottom)], fill=LINE_COLOR, width=3)
         return
@@ -195,19 +229,19 @@ def stem_with_label(draw, x, y_top, y_bottom, label, annot_font, side_label=Fals
     label_y = y_top + (y_bottom - y_top) / 2 - label_h / 2
     if side_label:
         draw.line([(x, y_top), (x, y_bottom)], fill=LINE_COLOR, width=3)
-        draw.text((x + 16, label_y), label, font=annot_font, fill=ANNOT_COLOR)
+        draw.text((x + 16, label_y), label, font=fonts.annot, fill=ANNOT_COLOR)
     else:
-        tw = text_w(draw, label, annot_font)
+        tw = text_w(draw, label, fonts.annot)
         draw.line([(x, y_top), (x, label_y - 2)], fill=LINE_COLOR, width=3)
         draw.line([(x, label_y + label_h + 2), (x, y_bottom)], fill=LINE_COLOR, width=3)
-        draw.text((x - tw / 2, label_y), label, font=annot_font, fill=ANNOT_COLOR)
+        draw.text((x - tw / 2, label_y), label, font=fonts.annot, fill=ANNOT_COLOR)
 
 
-def draw_connector(draw, prev_xs, prev_bottom, curr_xs, curr_top, label, annot_font):
+def draw_connector(draw, prev_xs, prev_bottom, curr_xs, curr_top, label, fonts):
     """prev_xs / curr_xs: x-centers of nodes in the previous/current row."""
     if len(prev_xs) == 1 and len(curr_xs) == 1:
         x = prev_xs[0]
-        stem_with_label(draw, x, prev_bottom, curr_top - 9, label, annot_font, side_label=True)
+        stem_with_label(draw, x, prev_bottom, curr_top - 9, label, fonts, side_label=True)
         draw.polygon([(x - 7, curr_top - 9), (x + 7, curr_top - 9), (x, curr_top)], fill=LINE_COLOR)
         return
 
@@ -223,7 +257,7 @@ def draw_connector(draw, prev_xs, prev_bottom, curr_xs, curr_top, label, annot_f
         stem_start = prev_bottom
 
     stem_end = (curr_top - 20) if len(curr_xs) > 1 else curr_top
-    stem_with_label(draw, collapse_x, stem_start, stem_end, label, annot_font, side_label=False)
+    stem_with_label(draw, collapse_x, stem_start, stem_end, label, fonts, side_label=False)
 
     if len(curr_xs) > 1:
         bar_y = stem_end
@@ -232,59 +266,108 @@ def draw_connector(draw, prev_xs, prev_bottom, curr_xs, curr_top, label, annot_f
             arrow_down(draw, x, bar_y, curr_top)
 
 
+class Block:
+    """A vertical sequence of rows, optionally ending in a non-reconverging
+    branch into sibling sub-blocks placed side by side."""
+
+    def __init__(self, rows_spec, draw, fonts):
+        self.linear = []
+        self.branch = None
+
+        for item in rows_spec:
+            if item.get("type") == "branch":
+                self.branch = item
+                break
+            nodes = [Node(n) for n in item["nodes"]]
+            for n in nodes:
+                n.measure(draw, fonts)
+            width = sum(n.width for n in nodes) + NODE_GAP * (len(nodes) - 1)
+            height = max(n.height for n in nodes)
+            self.linear.append({"nodes": nodes, "label": item.get("label"), "width": width, "height": height})
+
+        self.branch_children = []
+        if self.branch:
+            for b in self.branch["branches"]:
+                self.branch_children.append({"label": b.get("label"), "block": Block(b["rows"], draw, fonts)})
+
+        linear_width = max((r["width"] for r in self.linear), default=0)
+        linear_height = 0
+        for i, r in enumerate(self.linear):
+            if i > 0:
+                linear_height += ROW_GAP + (LABEL_CLEARANCE if r["label"] else 0)
+            linear_height += r["height"]
+
+        if self.branch_children:
+            branch_widths = [c["block"].width for c in self.branch_children]
+            branch_section_width = sum(branch_widths) + COLUMN_GAP * (len(self.branch_children) - 1)
+            branch_section_height = max(c["block"].height for c in self.branch_children)
+            fanout_height = BRANCH_STEM + BRANCH_ARROW_DROP
+            self.width = max(linear_width, branch_section_width)
+            self.height = linear_height + (fanout_height if self.linear else 0) + branch_section_height
+        else:
+            self.width = linear_width
+            self.height = linear_height
+
+    def draw(self, draw, cx, top, fonts):
+        y = top
+        last_xs = None
+        for i, r in enumerate(self.linear):
+            total_w = r["width"]
+            start_x = cx - total_w / 2
+            xs = []
+            x = start_x
+            for n in r["nodes"]:
+                node_cx = x + n.width / 2
+                xs.append(node_cx)
+                x += n.width + NODE_GAP
+            if i > 0:
+                y += ROW_GAP + (LABEL_CLEARANCE if r["label"] else 0)
+                draw_connector(draw, last_xs, last_bottom, xs, y, r["label"], fonts)
+            for n, x in zip(r["nodes"], xs):
+                draw_node(draw, n, x, y, fonts)
+            last_xs = xs
+            last_bottom = y + r["height"]
+            y = last_bottom
+
+        if self.branch_children:
+            parent_x = (sum(last_xs) / len(last_xs)) if last_xs else cx
+            parent_bottom = last_bottom if self.linear else top
+
+            bar_y = parent_bottom + BRANCH_STEM
+            draw.line([(parent_x, parent_bottom), (parent_x, bar_y)], fill=LINE_COLOR, width=3)
+
+            n = len(self.branch_children)
+            total_w = sum(c["block"].width for c in self.branch_children) + COLUMN_GAP * (n - 1)
+            start_x = cx - total_w / 2
+            col_positions = []
+            x = start_x
+            for c in self.branch_children:
+                col_cx = x + c["block"].width / 2
+                col_positions.append(col_cx)
+                x += c["block"].width + COLUMN_GAP
+
+            draw.line([(min(col_positions), bar_y), (max(col_positions), bar_y)], fill=LINE_COLOR, width=3)
+
+            content_top = bar_y + BRANCH_ARROW_DROP
+            for c, col_cx in zip(self.branch_children, col_positions):
+                arrow_down(draw, col_cx, bar_y, content_top)
+                if c["label"]:
+                    draw.text((col_cx + 10, bar_y + 4), c["label"], font=fonts.annot, fill=ANNOT_COLOR)
+                c["block"].draw(draw, col_cx, content_top, fonts)
+
+
 def render(spec, output_path):
     dummy = Image.new("RGB", (10, 10))
     ddraw = ImageDraw.Draw(dummy)
+    fonts = Fonts()
 
-    title_font = find_font("bold", 18)
-    sub_font = find_font("regular", 15)
-    bullet_font = find_font("regular", 15)
-    box_title_font = find_font("bold", 20)
-    annot_font = find_font("italic", 15)
+    root = Block(spec["rows"], ddraw, fonts)
+    canvas_w = root.width + MARGIN * 2
+    canvas_h = root.height + MARGIN * 2
 
-    rows = []
-    for row_spec in spec["rows"]:
-        nodes = [Node(n) for n in row_spec["nodes"]]
-        for n in nodes:
-            n.measure(ddraw, title_font, sub_font, bullet_font)
-        row_width = sum(n.width for n in nodes) + NODE_GAP * (len(nodes) - 1)
-        row_height = max(n.height for n in nodes)
-        rows.append({"nodes": nodes, "label": row_spec.get("label"), "width": row_width, "height": row_height})
-
-    canvas_w = max(r["width"] for r in rows) + MARGIN * 2
-    cx = canvas_w / 2
-
-    y = MARGIN
-    row_layouts = []
-    prev_xs = None
-    for i, row in enumerate(rows):
-        if i > 0:
-            gap = ROW_GAP + (LABEL_CLEARANCE if row["label"] else 0)
-            y += gap
-        top = y
-        n_nodes = len(row["nodes"])
-        total_w = row["width"]
-        start_x = cx - total_w / 2
-        xs = []
-        x = start_x
-        for n in row["nodes"]:
-            node_cx = x + n.width / 2
-            xs.append(node_cx)
-            x += n.width + NODE_GAP
-        row_layouts.append({"top": top, "bottom": top + row["height"], "xs": xs, "nodes": row["nodes"], "label": row["label"]})
-        y = top + row["height"]
-        prev_xs = xs
-
-    canvas_h = y + MARGIN
     img = Image.new("RGB", (int(canvas_w), int(canvas_h)), BG)
     draw = ImageDraw.Draw(img)
-
-    for i, rl in enumerate(row_layouts):
-        for n, x in zip(rl["nodes"], rl["xs"]):
-            draw_node(draw, n, x, rl["top"], title_font, sub_font, bullet_font, box_title_font)
-        if i > 0:
-            prev = row_layouts[i - 1]
-            draw_connector(draw, prev["xs"], prev["bottom"], rl["xs"], rl["top"], rl["label"], annot_font)
+    root.draw(draw, canvas_w / 2, MARGIN, fonts)
 
     img.save(output_path)
     print(f"Saved {int(canvas_w)}x{int(canvas_h)} to {output_path}")

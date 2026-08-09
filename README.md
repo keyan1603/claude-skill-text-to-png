@@ -3,9 +3,10 @@
 A [Claude Code / Claude Skill](https://docs.claude.com/en/docs/claude-code/skills) with two related tools:
 
 1. **Rasterize** text, code, terminal output, or ASCII art into a PNG exactly as typed, using a correctly-discovered monospace font.
-2. **Redraw** an ASCII box-and-arrow diagram as a real flowchart — clean rounded boxes, real arrows, proper fan-out/fan-in branching — instead of just a screenshot of the ASCII.
+2. **Redraw** an ASCII box-and-arrow diagram as a real flowchart — clean rounded boxes, real arrows, both fan-out/fan-in branching that reconverges and branches that don't (e.g. a guardrail that terminates one path while the other continues) — instead of just a screenshot of the ASCII.
 
 ![Example flowchart output](./assets/flowchart-example.png)
+![Example branching flowchart output](./assets/flowchart-branch-example.png)
 
 ## What it does
 
@@ -64,7 +65,7 @@ python scripts/render_text_png.py --text "BUILD PASSING" --fg "#00ff00" --bg "#0
 
 ### 2. Redrawing an ASCII diagram as a flowchart (`render_flowchart.py`)
 
-Takes a JSON description of the diagram's structure — not the raw ASCII — and draws it with real boxes and arrows, including fan-out (one box splitting into several) and fan-in (several merging back into one).
+Takes a JSON description of the diagram's structure — not the raw ASCII — and draws it with real boxes and arrows, including fan-out/fan-in (several branches that reconverge on the same next step) and non-reconverging branches (some paths end, others keep going — e.g. a guardrail's blocked/safe split).
 
 ```bash
 python scripts/render_flowchart.py --spec spec.json --output flowchart.png
@@ -90,11 +91,23 @@ Spec format:
 
 - Rows are drawn top to bottom, connected by arrows automatically.
 - A row's `"label"` annotates the arrow(s) leading into it (for side-notes like "at end of session, not per turn").
-- Multiple nodes in a row auto fan-out (if the previous row had one node) or fan-in (if the next row has one node) — this is what produces branching diagrams like an orchestrator delegating to parallel workers.
+- Multiple nodes in a row auto fan-out (if the previous row had one node) or fan-in (if the next row has one node) — for branches that reconverge on the same next step, like an orchestrator delegating to parallel workers.
 - Node type `"plain"`: borderless bold centered text (`"lines"`: list of strings).
-- Node type `"box"`: a rounded rectangle with a bold `"title"`, plus either `"subtitle"` (one centered line) or `"bullets"` (a wrapped, left-aligned list) — not both.
+- Node type `"box"`: a rounded rectangle with a bold `"title"`, plus at most one of `"subtitle"` (one centered line), `"bullets"` (a wrapped, left-aligned list), or `"paragraph"` (a wrapped block of plain text, no bullet marker).
 
-The example image above was generated from this tool.
+For branches that DON'T reconverge (a decision point where one path terminates and another continues on a different, longer path), use a `"branch"` entry instead — it must be the last entry in its `"rows"` list, and each branch's own `"rows"` follows the same rules recursively:
+
+```json
+{"type": "branch", "branches": [
+    {"label": "blocked", "rows": [{"nodes": [{"type": "plain", "lines": ["Trace ends here"]}]}]},
+    {"label": "safe", "rows": [
+        {"nodes": [{"type": "plain", "lines": ["Retrieval"]}]},
+        {"nodes": [{"type": "plain", "lines": ["Generation"]}]}
+    ]}
+]}
+```
+
+Both example images above were generated from this tool.
 
 ## License
 

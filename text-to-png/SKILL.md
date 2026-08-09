@@ -42,7 +42,7 @@ Image size is always computed automatically from the text — no need to guess d
 
 ## 2. Redrawing an ASCII diagram as a real flowchart (`render_flowchart.py`)
 
-Takes a JSON description of the diagram's structure (not the raw ASCII) and draws it with proper rounded boxes, wrapped/bulleted text, and arrows — including fan-out (one box splitting into several) and fan-in (several boxes merging back into one). You do the reading of the ASCII diagram yourself (you're good at this — treat it like interpreting a hand-drawn flowchart) and translate it into the JSON spec; the script only handles layout and drawing.
+Takes a JSON description of the diagram's structure (not the raw ASCII) and draws it with proper rounded boxes, wrapped/bulleted text, and arrows — including fan-out/fan-in that reconverges (one box splitting into several that later merge back into a shared next step) AND branches that never reconverge (e.g. a guardrail that either terminates the flow right there or continues down a completely different, longer path). You do the reading of the ASCII diagram yourself (you're good at this — treat it like interpreting a hand-drawn flowchart) and translate it into the JSON spec; the script only handles layout and drawing.
 
 ```bash
 python scripts/render_flowchart.py --spec spec.json --output flowchart.png
@@ -68,12 +68,32 @@ python scripts/render_flowchart.py --spec spec.json --output flowchart.png
 
 - Rows are drawn top to bottom, connected by arrows automatically.
 - A row's `"label"` annotates the arrow(s) leading INTO that row — use it for the parenthetical/side notes that appear next to arrows in the source ASCII (e.g. "at end of session, not per turn").
-- **`"nodes"`**: one node per row draws a single centered box/line with a straight arrow in and out. Multiple nodes in a row auto fan-out (if the previous row had one node) or fan-in (if the next row has one node) — this is what handles branching diagrams like an orchestrator delegating to parallel workers.
+- **`"nodes"`**: one node per row draws a single centered box/line with a straight arrow in and out. Multiple nodes in a row auto fan-out (if the previous row had one node) or fan-in (if the next row has one node) — this is what handles branching diagrams like an orchestrator delegating to parallel workers, where every branch reconverges on the same next step.
 - Node type `"plain"`: borderless bold centered text — use for start/end labels and inline steps that aren't boxed in the source (`"lines"`: list of strings, one per line).
-- Node type `"box"`: a rounded rectangle with a bold `"title"`, plus EITHER `"subtitle"` (one centered regular-weight line, for simple two-line boxes) OR `"bullets"` (a left-aligned, word-wrapped list, for boxes with several sub-points) — not both.
+- Node type `"box"`: a rounded rectangle with a bold `"title"`, plus AT MOST ONE of: `"subtitle"` (one centered regular-weight line, for simple two-line boxes), `"bullets"` (a left-aligned, word-wrapped bullet list, for boxes with several distinct sub-points), or `"paragraph"` (a left-aligned, word-wrapped block of plain text with no bullet marker, for a single descriptive blurb under the title).
+
+### Branches that don't reconverge
+
+For a decision point where the paths genuinely diverge — one side terminates, the other continues on a different, unrelated path (guardrail blocked/safe, validation pass/fail, error handling) — use a `"branch"` entry instead of a multi-node row. It MUST be the last entry in whatever `"rows"` list it appears in (nothing reconverges after it), and each branch's own `"rows"` follows the same rules recursively, so a branch can end in another branch:
+
+```json
+{"type": "branch", "branches": [
+    {"label": "blocked", "rows": [
+        {"nodes": [{"type": "plain", "lines": ["Trace ends here", "(1 span total)"]}]}
+    ]},
+    {"label": "safe", "rows": [
+        {"nodes": [{"type": "plain", "lines": ["Retrieval"]}]},
+        {"nodes": [{"type": "plain", "lines": ["Generation"]}]}
+    ]}
+]}
+```
+
+Each branch's `"label"` is drawn beside its own arrow right after the split (matching how ASCII diagrams usually annotate branches), not centered on a shared bar. Branch columns can be different lengths — one ending immediately while another continues for several more rows — and are otherwise laid out exactly like a top-level diagram.
+
+Rule of thumb for which shape to use: if every path in the ASCII eventually funnels back into the same box, it's a fan-out/fan-in `"nodes"` row. If the ASCII shows some paths ending (a terminal label, a dead end) while others keep going, it's a non-reconverging `"branch"`.
 
 ### Workflow
 
-1. Read the ASCII diagram and identify: the linear sequence of steps, which boxes have bullet lists vs. simple labels, where branching happens (one node's arrow splits into several, or several arrows merge into one), and any side-annotations on arrows.
+1. Read the ASCII diagram and identify: the linear sequence of steps, which boxes have bullet/paragraph bodies vs. simple labels, where branching happens and whether it reconverges or not, and any side-annotations on arrows.
 2. Translate that structure into the JSON spec — this is an interpretation step, not a text transcription, so use your judgment on how to group bullets or word a title if the ASCII is terse.
 3. Run the script, check the output image, and adjust the spec (not the script) if spacing/wrapping looks off for unusually long titles or many bullets.
