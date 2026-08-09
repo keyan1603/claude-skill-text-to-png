@@ -8,6 +8,7 @@ A [Claude Code / Claude Skill](https://docs.claude.com/en/docs/claude-code/skill
 ![Example flowchart output](./assets/flowchart-example.png)
 ![Example branching flowchart output](./assets/flowchart-branch-example.png)
 ![Example horizontal-chain flowchart output](./assets/flowchart-hchain-example.png)
+![Example guard-clause flowchart output](./assets/flowchart-sideexit-example.png)
 
 ## What it does
 
@@ -118,7 +119,14 @@ For diagrams that flow left-to-right instead of top-to-bottom (a pipeline: `A --
 ]}
 ```
 
-All three example images above were generated from this tool.
+For guard-clause style branches — the main flow stays on one straight vertical line, and only the exceptional path tees off to the side (usually a "blocked"/error case), rather than the whole flow splitting into two columns — add `"side_exit"` to the row it leaves from instead of using `"branch"`. This keeps the main line centered even with several of these stacked in one diagram:
+
+```json
+{"nodes": [{"type": "plain", "lines": ["Input Classifier (LLM)"]}],
+ "side_exit": {"label": "blocked", "node": {"type": "plain", "lines": ["Refuse, never touch retrieval or generation"]}}}
+```
+
+All four example images above were generated from this tool.
 
 ## License
 

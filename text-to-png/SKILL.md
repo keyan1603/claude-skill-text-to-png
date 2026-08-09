@@ -108,6 +108,30 @@ Each branch's `"label"` is drawn beside its own arrow right after the split (mat
 
 Rule of thumb for which shape to use: if every path in the ASCII eventually funnels back into the same box, it's a fan-out/fan-in `"nodes"` row. If the ASCII shows some paths ending (a terminal label, a dead end) while others keep going, it's a non-reconverging `"branch"`.
 
+### Guard-clause side exits
+
+Some ASCII diagrams draw a branch differently from either shape above: the main flow stays on a single straight vertical line, and only the "exit" path tees off to the side (usually right) partway down the connector — e.g.:
+
+```
+Input Classifier (LLM)
+    |
+    +--[blocked]--> Refuse, never touch retrieval or generation
+    |
+    v
+Retrieval + Answer Generation
+```
+
+This is a guard-clause pattern (the common case rather than the exception continues straight down; the exceptional case peels off). Don't force this into a `"branch"` — reconstructing it as a two-column fan-out would shift the main line sideways and lose the "everything stays centered, exceptions peel off" shape the source is deliberately using, which matters a lot when there are several of these guard clauses stacked in one diagram (as in the example above's second guardrail further down) — using `"branch"` there would zigzag the main line left/right at each one.
+
+Instead, add `"side_exit"` to the row the branch leaves FROM:
+
+```json
+{"nodes": [{"type": "plain", "lines": ["Input Classifier (LLM)"]}],
+ "side_exit": {"label": "blocked", "node": {"type": "plain", "lines": ["Refuse, never touch retrieval or generation"]}}}
+```
+
+The main vertical line continues straight down to the next row exactly as normal; the side-exit tees off partway down that connector to a small labeled box on the right, and doesn't affect the main line's horizontal position at all — so any number of these can stack down a diagram without it drifting sideways.
+
 ### Workflow
 
 1. Read the ASCII diagram and identify: the linear sequence of steps, which boxes have bullet/paragraph bodies vs. simple labels, where branching happens and whether it reconverges or not, and any side-annotations on arrows.

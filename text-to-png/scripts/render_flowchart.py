@@ -96,6 +96,8 @@ MARGIN = 40
 LABEL_CLEARANCE = 22    # extra vertical room reserved when a row has a label
 BRANCH_STEM = 26        # vertical drop from parent to the branch bar
 BRANCH_ARROW_DROP = 30  # vertical drop from the branch bar into each column
+SIDE_GAP = 50            # horizontal space from the main line to a side-exit node
+SIDE_BRANCH_DROP = 22    # vertical offset from a row's bottom to its side-exit tee point
 
 
 def wrap_text(draw, text, font, max_width):
@@ -339,9 +341,18 @@ class Block:
             gap = HCHAIN_GAP if is_hchain else NODE_GAP
             width = sum(n.width for n in nodes) + gap * (len(nodes) - 1)
             height = max(n.height for n in nodes)
+
+            side_exit = None
+            se_spec = item.get("side_exit")
+            if se_spec:
+                se_node = Node(se_spec["node"])
+                se_node.measure(draw, fonts)
+                side_exit = {"label": se_spec.get("label"), "node": se_node}
+
             self.linear.append({
                 "nodes": nodes, "label": item.get("label"), "width": width, "height": height,
                 "hchain": is_hchain, "direction": item.get("direction", "right"),
+                "side_exit": side_exit,
             })
 
         self.branch_children = []
@@ -356,13 +367,19 @@ class Block:
                 linear_height += ROW_GAP + (LABEL_CLEARANCE if r["label"] else 0)
             linear_height += r["height"]
 
+        self.right_extra = 0
+        for r in self.linear:
+            if r["side_exit"]:
+                self.right_extra = max(self.right_extra, SIDE_GAP + r["side_exit"]["node"].width)
+
         if self.branch_children:
-            branch_widths = [c["block"].width for c in self.branch_children]
+            branch_widths = [c["block"].width + c["block"].right_extra for c in self.branch_children]
             branch_section_width = sum(branch_widths) + COLUMN_GAP * (len(self.branch_children) - 1)
             branch_section_height = max(c["block"].height for c in self.branch_children)
             fanout_height = BRANCH_STEM + BRANCH_ARROW_DROP
             self.width = max(linear_width, branch_section_width)
             self.height = linear_height + (fanout_height if self.linear else 0) + branch_section_height
+            self.right_extra = max(self.right_extra, self.branch_children[-1]["block"].right_extra)
         else:
             self.width = linear_width
             self.height = linear_height
@@ -409,6 +426,20 @@ class Block:
                         arrow_horizontal(draw, edge_right, edge_left, arrow_y)
                     else:
                         arrow_horizontal(draw, edge_left, edge_right, arrow_y)
+            if r["side_exit"]:
+                se = r["side_exit"]
+                branch_x = sum(exit_xs) / len(exit_xs)
+                branch_y = y + r["height"] + SIDE_BRANCH_DROP
+                draw.line([(branch_x, y + r["height"]), (branch_x, branch_y)], fill=LINE_COLOR, width=3)
+                se_node = se["node"]
+                se_left = branch_x + SIDE_GAP
+                se_cx = se_left + se_node.width / 2
+                se_top = branch_y - se_node.height / 2
+                arrow_horizontal(draw, branch_x, se_left, branch_y)
+                if se["label"]:
+                    draw.text((branch_x + 10, branch_y - 24), se["label"], font=fonts.annot, fill=ANNOT_COLOR)
+                draw_node(draw, se_node, se_cx, se_top, fonts)
+
             last_xs = exit_xs
             last_bottom = y + r["height"]
             y = last_bottom
@@ -421,14 +452,15 @@ class Block:
             draw.line([(parent_x, parent_bottom), (parent_x, bar_y)], fill=LINE_COLOR, width=3)
 
             n = len(self.branch_children)
-            total_w = sum(c["block"].width for c in self.branch_children) + COLUMN_GAP * (n - 1)
+            eff_widths = [c["block"].width + c["block"].right_extra for c in self.branch_children]
+            total_w = sum(eff_widths) + COLUMN_GAP * (n - 1)
             start_x = cx - total_w / 2
             col_positions = []
             x = start_x
-            for c in self.branch_children:
+            for c, eff_w in zip(self.branch_children, eff_widths):
                 col_cx = x + c["block"].width / 2
                 col_positions.append(col_cx)
-                x += c["block"].width + COLUMN_GAP
+                x += eff_w + COLUMN_GAP
 
             draw.line([(min(col_positions), bar_y), (max(col_positions), bar_y)], fill=LINE_COLOR, width=3)
 
@@ -446,12 +478,13 @@ def render(spec, output_path):
     fonts = Fonts()
 
     root = Block(spec["rows"], ddraw, fonts)
-    canvas_w = root.width + MARGIN * 2
+    cx = MARGIN + root.width / 2
+    canvas_w = root.width + MARGIN * 2 + root.right_extra
     canvas_h = root.height + MARGIN * 2
 
     img = Image.new("RGB", (int(canvas_w), int(canvas_h)), BG)
     draw = ImageDraw.Draw(img)
-    root.draw(draw, canvas_w / 2, MARGIN, fonts)
+    root.draw(draw, cx, MARGIN, fonts)
 
     img.save(output_path)
     print(f"Saved {int(canvas_w)}x{int(canvas_h)} to {output_path}")
