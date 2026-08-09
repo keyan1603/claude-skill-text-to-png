@@ -7,13 +7,14 @@ A [Claude Code / Claude Skill](https://docs.claude.com/en/docs/claude-code/skill
 
 ![Example flowchart output](./assets/flowchart-example.png)
 ![Example branching flowchart output](./assets/flowchart-branch-example.png)
+![Example horizontal-chain flowchart output](./assets/flowchart-hchain-example.png)
 
 ## What it does
 
 - Renders any text to a PNG with correct monospace alignment (important for ASCII art and terminal output, which break under proportional fonts).
 - Auto-discovers a monospace font already installed on your system (Consolas/Courier on Windows, Menlo/Monaco on macOS, DejaVu/Liberation Mono on Linux) — no bundled font required.
 - Ships with four color themes (`default`, `terminal`, `dark`, `amber`) plus fully custom `--fg`/`--bg` colors.
-- Turns ASCII flowcharts/architecture diagrams into properly drawn diagrams (rounded boxes, wrapped bullet text, branching arrows with side labels), driven by a small JSON spec rather than a screenshot of the source characters.
+- Turns ASCII flowcharts/architecture diagrams into properly drawn diagrams (rounded boxes, wrapped bullet/paragraph text, branching arrows with side labels, horizontal pipelines including "snake" layouts that reverse direction), driven by a small JSON spec rather than a screenshot of the source characters.
 - Auto-sizes every output image to fit its content exactly.
 
 ## Install
@@ -92,8 +93,9 @@ Spec format:
 - Rows are drawn top to bottom, connected by arrows automatically.
 - A row's `"label"` annotates the arrow(s) leading into it (for side-notes like "at end of session, not per turn").
 - Multiple nodes in a row auto fan-out (if the previous row had one node) or fan-in (if the next row has one node) — for branches that reconverge on the same next step, like an orchestrator delegating to parallel workers.
-- Node type `"plain"`: borderless bold centered text (`"lines"`: list of strings).
+- Node type `"plain"`: borderless text, either `"lines"` (list of strings, all bold — for short labels) or `"title"` + optional `"detail"` (bold title, smaller regular-weight description lines — for an unboxed step with explanatory subtext).
 - Node type `"box"`: a rounded rectangle with a bold `"title"`, plus at most one of `"subtitle"` (one centered line), `"bullets"` (a wrapped, left-aligned list), or `"paragraph"` (a wrapped block of plain text, no bullet marker).
+- **`"title"` can be a string or a list of strings** on either node type — match the source ASCII's own line-wrapping for long titles rather than joining it into one line, since an unexpectedly wide box shifts that node's connector anchor and can visibly misalign arrows to/from neighboring rows.
 
 For branches that DON'T reconverge (a decision point where one path terminates and another continues on a different, longer path), use a `"branch"` entry instead — it must be the last entry in its `"rows"` list, and each branch's own `"rows"` follows the same rules recursively:
 
@@ -107,7 +109,16 @@ For branches that DON'T reconverge (a decision point where one path terminates a
 ]}
 ```
 
-Both example images above were generated from this tool.
+For diagrams that flow left-to-right instead of top-to-bottom (a pipeline: `A --> B --> C`), use `{"type": "hchain", "nodes": [...]}` as a row entry — nodes are laid out side by side with arrows between them. It still connects vertically to neighboring rows like any other row (incoming arrow lands on the flow-first node, outgoing arrow leaves the flow-last node). Add `"direction": "left"` to flow right-to-left instead, for "snake" layouts that reverse direction every row to stay compact — `"nodes"` stays in flow order either way, only the visual placement and arrowheads flip:
+
+```json
+{"type": "hchain", "nodes": [
+    {"type": "plain", "title": "Traced requests", "detail": ["(structured JSON)"]},
+    {"type": "plain", "title": "S3 / Blob Storage", "detail": ["(durable, append-only)"]}
+]}
+```
+
+All three example images above were generated from this tool.
 
 ## License
 

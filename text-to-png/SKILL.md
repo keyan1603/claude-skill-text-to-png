@@ -69,8 +69,24 @@ python scripts/render_flowchart.py --spec spec.json --output flowchart.png
 - Rows are drawn top to bottom, connected by arrows automatically.
 - A row's `"label"` annotates the arrow(s) leading INTO that row — use it for the parenthetical/side notes that appear next to arrows in the source ASCII (e.g. "at end of session, not per turn").
 - **`"nodes"`**: one node per row draws a single centered box/line with a straight arrow in and out. Multiple nodes in a row auto fan-out (if the previous row had one node) or fan-in (if the next row has one node) — this is what handles branching diagrams like an orchestrator delegating to parallel workers, where every branch reconverges on the same next step.
-- Node type `"plain"`: borderless bold centered text — use for start/end labels and inline steps that aren't boxed in the source (`"lines"`: list of strings, one per line).
+- Node type `"plain"`: borderless centered text, in one of two forms — `"lines"` (a list of strings, all rendered bold, for short labels like a start/end node) OR `"title"` + optional `"detail"` (a bold title with smaller regular-weight description lines under it, for an unboxed process step that still needs explanatory subtext, like "Retrieval (span: retrieval)" style steps that aren't drawn as boxes in the source).
 - Node type `"box"`: a rounded rectangle with a bold `"title"`, plus AT MOST ONE of: `"subtitle"` (one centered regular-weight line, for simple two-line boxes), `"bullets"` (a left-aligned, word-wrapped bullet list, for boxes with several distinct sub-points), or `"paragraph"` (a left-aligned, word-wrapped block of plain text with no bullet marker, for a single descriptive blurb under the title).
+- **`"title"` can be a string or a list of strings** on both node types. Match how the source ASCII actually wraps it — if the source splits a long name across two lines (often done specifically to keep that box narrow), pass `"title": ["line one", "line two"]` rather than joining it into one long line. This matters more than it sounds: an unexpectedly wide box shifts that node's connector anchor point sideways, which can visibly misalign arrows coming from or going to neighboring rows — always match the source's line breaks for titles, not just for bullets/paragraphs.
+
+### Horizontal chains
+
+Some diagrams flow left-to-right instead of top-to-bottom (a pipeline: `A --> B --> C`). Use `{"type": "hchain", "nodes": [...]}` as a row entry — nodes are laid out side by side connected by rightward arrows, instead of the usual vertical stacking:
+
+```json
+{"type": "hchain", "nodes": [
+    {"type": "plain", "title": "Traced requests", "detail": ["(structured JSON)"]},
+    {"type": "plain", "title": "S3 / Blob Storage", "detail": ["(durable, append-only)"]}
+]}
+```
+
+An hchain row still connects vertically to whatever comes before/after it in the same way a normal row would — the incoming arrow lands on the flow's first node, and any outgoing arrow leaves from the flow's last node.
+
+For a "snake" layout (a pipeline that reverses direction every row to stay compact — common when there isn't room to keep going straight down), add `"direction": "left"` to make that row flow right-to-left instead: `"nodes"` stays in flow order (first = upstream, last = downstream), only the visual placement and arrowheads flip. This is what makes the incoming/outgoing vertical connectors line up correctly between rows — the entry/exit anchor is always the flow-first/flow-last node's position, never "whichever node is on the left," so a row above ending on the right and a reversed row below starting on the right will connect straight down without extra work.
 
 ### Branches that don't reconverge
 
@@ -96,4 +112,4 @@ Rule of thumb for which shape to use: if every path in the ASCII eventually funn
 
 1. Read the ASCII diagram and identify: the linear sequence of steps, which boxes have bullet/paragraph bodies vs. simple labels, where branching happens and whether it reconverges or not, and any side-annotations on arrows.
 2. Translate that structure into the JSON spec — this is an interpretation step, not a text transcription, so use your judgment on how to group bullets or word a title if the ASCII is terse.
-3. Run the script, check the output image, and adjust the spec (not the script) if spacing/wrapping looks off for unusually long titles or many bullets.
+3. Run the script, check the output image, and adjust the spec (not the script) if spacing/wrapping looks off for unusually long titles or many bullets. If an arrow lands in the wrong place relative to a node, check whether that node's title matches the source's own line-wrapping (see above) before assuming it's a layout bug — a title that's wider than the source intended is the most common cause.

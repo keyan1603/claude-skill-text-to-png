@@ -90,6 +90,7 @@ LINE_COLOR = "#33507a"
 PAD_X, PAD_Y = 20, 16
 ROW_GAP = 60           # vertical space between rows, for connector + label
 NODE_GAP = 40          # horizontal space between sibling nodes in a fan row
+HCHAIN_GAP = 70         # horizontal space between nodes in a left-to-right chain (room for the arrow)
 COLUMN_GAP = 60         # horizontal space between sibling branch columns
 MARGIN = 40
 LABEL_CLEARANCE = 22    # extra vertical room reserved when a row has a label
@@ -134,50 +135,79 @@ class Node:
 
     def measure(self, draw, fonts):
         if self.type == "plain":
-            lines = self.spec["lines"]
-            widths = [text_w(draw, line, fonts.plain) for line in lines]
-            self.width = max(widths) + PAD_X
-            self.height = len(lines) * 28
-            self._plain_lines = lines
+            self._plain_lines = None
+            self._plain_title = None
+            self._plain_detail = None
+            if "title" in self.spec:
+                title = self.spec["title"]
+                title_lines = title if isinstance(title, list) else [title]
+                detail = self.spec.get("detail", [])
+                title_w = max((text_w(draw, t, fonts.plain) for t in title_lines), default=0)
+                detail_w = max((text_w(draw, l, fonts.sub) for l in detail), default=0)
+                self.width = max(title_w, detail_w) + PAD_X
+                self.height = 28 * len(title_lines) + (4 + 20 * len(detail) if detail else 0)
+                self._plain_title = title_lines
+                self._plain_detail = detail
+            else:
+                lines = self.spec["lines"]
+                widths = [text_w(draw, line, fonts.plain) for line in lines]
+                self.width = max(widths) + PAD_X
+                self.height = len(lines) * 28
+                self._plain_lines = lines
             return self.width, self.height
 
         title = self.spec["title"]
+        title_lines = title if isinstance(title, list) else [title]
+        title_h = 26 * len(title_lines)
         subtitle = self.spec.get("subtitle")
         bullets = self.spec.get("bullets")
         paragraph = self.spec.get("paragraph")
 
+        self._title_lines = title_lines
         self._bullets = None
         self._paragraph_lines = None
 
         if bullets:
             max_content_w = 420
-            title_w = text_w(draw, title, fonts.title)
+            title_w = max(text_w(draw, t, fonts.title) for t in title_lines)
             wrapped = []
             for b in bullets:
                 wrapped.extend(wrap_text(draw, "\u2022 " + b, fonts.body, max_content_w))
             body_w = max((text_w(draw, line, fonts.body) for line in wrapped), default=0)
             self.width = max(title_w, body_w, 260) + PAD_X * 2
-            self.height = PAD_Y * 2 + 26 + 8 + 22 * len(wrapped)
+            self.height = PAD_Y * 2 + title_h + 8 + 22 * len(wrapped)
             self._bullets = wrapped
         elif paragraph:
             max_content_w = 340
-            title_w = text_w(draw, title, fonts.title)
+            title_w = max(text_w(draw, t, fonts.title) for t in title_lines)
             wrapped = wrap_text(draw, paragraph, fonts.body, max_content_w)
             body_w = max((text_w(draw, line, fonts.body) for line in wrapped), default=0)
             self.width = max(title_w, body_w, 260) + PAD_X * 2
-            self.height = PAD_Y * 2 + 26 + 8 + 20 * len(wrapped)
+            self.height = PAD_Y * 2 + title_h + 8 + 20 * len(wrapped)
             self._paragraph_lines = wrapped
         else:
-            title_w = text_w(draw, title, fonts.title)
+            title_w = max(text_w(draw, t, fonts.title) for t in title_lines)
             sub_w = text_w(draw, subtitle, fonts.sub) if subtitle else 0
             self.width = max(title_w, sub_w, 160) + PAD_X * 2 + 20
-            self.height = PAD_Y * 2 + 26 + (24 if subtitle else 0)
+            self.height = PAD_Y * 2 + title_h + (24 if subtitle else 0)
 
         return self.width, self.height
 
 
 def draw_node(draw, node, cx, top, fonts):
     if node.type == "plain":
+        if node._plain_title is not None:
+            ty = top
+            for t in node._plain_title:
+                w = text_w(draw, t, fonts.plain)
+                draw.text((cx - w / 2, ty), t, font=fonts.plain, fill=TEXT_COLOR)
+                ty += 28
+            ty += 4 if node._plain_detail else 0
+            for line in node._plain_detail:
+                lw = text_w(draw, line, fonts.sub)
+                draw.text((cx - lw / 2, ty), line, font=fonts.sub, fill=SUB_COLOR)
+                ty += 20
+            return
         y = top
         for line in node._plain_lines:
             w = text_w(draw, line, fonts.plain)
@@ -189,34 +219,58 @@ def draw_node(draw, node, cx, top, fonts):
     x1, y1 = cx + node.width / 2, top + node.height
     draw.rounded_rectangle([x0, y0, x1, y1], radius=10, fill=BOX_FILL, outline=BOX_EDGE, width=2)
 
-    title = node.spec["title"]
+    title_lines = node._title_lines
+    title_h = 26 * len(title_lines)
     if node._bullets is not None:
-        draw.text((x0 + PAD_X, y0 + PAD_Y), title, font=fonts.title, fill=TEXT_COLOR)
-        ty = y0 + PAD_Y + 26 + 8
+        ty = y0 + PAD_Y
+        for t in title_lines:
+            draw.text((x0 + PAD_X, ty), t, font=fonts.title, fill=TEXT_COLOR)
+            ty += 26
+        ty += 8
         for line in node._bullets:
             draw.text((x0 + PAD_X, ty), line, font=fonts.body, fill=SUB_COLOR)
             ty += 22
     elif node._paragraph_lines is not None:
-        draw.text((x0 + PAD_X, y0 + PAD_Y), title, font=fonts.title, fill=TEXT_COLOR)
-        ty = y0 + PAD_Y + 26 + 8
+        ty = y0 + PAD_Y
+        for t in title_lines:
+            draw.text((x0 + PAD_X, ty), t, font=fonts.title, fill=TEXT_COLOR)
+            ty += 26
+        ty += 8
         for line in node._paragraph_lines:
             draw.text((x0 + PAD_X, ty), line, font=fonts.body, fill=SUB_COLOR)
             ty += 20
     else:
         subtitle = node.spec.get("subtitle")
         if subtitle:
-            tw = text_w(draw, title, fonts.title)
-            draw.text((cx - tw / 2, y0 + PAD_Y), title, font=fonts.title, fill=TEXT_COLOR)
+            ty = y0 + PAD_Y
+            for t in title_lines:
+                tw = text_w(draw, t, fonts.title)
+                draw.text((cx - tw / 2, ty), t, font=fonts.title, fill=TEXT_COLOR)
+                ty += 26
             sw = text_w(draw, subtitle, fonts.sub)
-            draw.text((cx - sw / 2, y0 + PAD_Y + 26), subtitle, font=fonts.sub, fill=SUB_COLOR)
+            draw.text((cx - sw / 2, ty), subtitle, font=fonts.sub, fill=SUB_COLOR)
         else:
-            tw = text_w(draw, title, fonts.title)
-            draw.text((cx - tw / 2, y0 + (node.height - 20) / 2), title, font=fonts.title, fill=TEXT_COLOR)
+            ty = y0 + (node.height - title_h) / 2
+            for t in title_lines:
+                tw = text_w(draw, t, fonts.title)
+                draw.text((cx - tw / 2, ty), t, font=fonts.title, fill=TEXT_COLOR)
+                ty += 26
 
 
 def arrow_down(draw, x, y_top, y_bottom):
     draw.line([(x, y_top), (x, y_bottom - 9)], fill=LINE_COLOR, width=3)
     draw.polygon([(x - 7, y_bottom - 9), (x + 7, y_bottom - 9), (x, y_bottom)], fill=LINE_COLOR)
+
+
+def arrow_horizontal(draw, x_from, x_to, y):
+    """Horizontal arrow from x_from to x_to, arrowhead at x_to. Works in
+    either direction (x_to can be left or right of x_from)."""
+    if x_to >= x_from:
+        draw.line([(x_from, y), (x_to - 9, y)], fill=LINE_COLOR, width=3)
+        draw.polygon([(x_to - 9, y - 7), (x_to - 9, y + 7), (x_to, y)], fill=LINE_COLOR)
+    else:
+        draw.line([(x_from, y), (x_to + 9, y)], fill=LINE_COLOR, width=3)
+        draw.polygon([(x_to + 9, y - 7), (x_to + 9, y + 7), (x_to, y)], fill=LINE_COLOR)
 
 
 def stem_with_label(draw, x, y_top, y_bottom, label, fonts, side_label=False):
@@ -278,12 +332,17 @@ class Block:
             if item.get("type") == "branch":
                 self.branch = item
                 break
+            is_hchain = item.get("type") == "hchain"
             nodes = [Node(n) for n in item["nodes"]]
             for n in nodes:
                 n.measure(draw, fonts)
-            width = sum(n.width for n in nodes) + NODE_GAP * (len(nodes) - 1)
+            gap = HCHAIN_GAP if is_hchain else NODE_GAP
+            width = sum(n.width for n in nodes) + gap * (len(nodes) - 1)
             height = max(n.height for n in nodes)
-            self.linear.append({"nodes": nodes, "label": item.get("label"), "width": width, "height": height})
+            self.linear.append({
+                "nodes": nodes, "label": item.get("label"), "width": width, "height": height,
+                "hchain": is_hchain, "direction": item.get("direction", "right"),
+            })
 
         self.branch_children = []
         if self.branch:
@@ -314,18 +373,43 @@ class Block:
         for i, r in enumerate(self.linear):
             total_w = r["width"]
             start_x = cx - total_w / 2
-            xs = []
+            gap = HCHAIN_GAP if r["hchain"] else NODE_GAP
+            reversed_dir = r["hchain"] and r["direction"] == "left"
+            # display_nodes is the spatial left-to-right order; for a
+            # right-to-left hchain that's the reverse of flow order.
+            display_nodes = list(reversed(r["nodes"])) if reversed_dir else r["nodes"]
+
+            positions = []
             x = start_x
-            for n in r["nodes"]:
+            for n in display_nodes:
                 node_cx = x + n.width / 2
-                xs.append(node_cx)
-                x += n.width + NODE_GAP
+                positions.append(node_cx)
+                x += n.width + gap
+
+            if r["hchain"]:
+                # entry = flow-first node's position, exit = flow-last node's position
+                entry_xs = [positions[-1] if reversed_dir else positions[0]]
+                exit_xs = [positions[0] if reversed_dir else positions[-1]]
+            else:
+                entry_xs = positions
+                exit_xs = positions
+
             if i > 0:
                 y += ROW_GAP + (LABEL_CLEARANCE if r["label"] else 0)
-                draw_connector(draw, last_xs, last_bottom, xs, y, r["label"], fonts)
-            for n, x in zip(r["nodes"], xs):
+                draw_connector(draw, last_xs, last_bottom, entry_xs, y, r["label"], fonts)
+            for n, x in zip(display_nodes, positions):
                 draw_node(draw, n, x, y, fonts)
-            last_xs = xs
+            if r["hchain"]:
+                arrow_y = y + 14
+                for j in range(len(display_nodes) - 1):
+                    left_n, right_n = display_nodes[j], display_nodes[j + 1]
+                    edge_left = positions[j] + left_n.width / 2
+                    edge_right = positions[j + 1] - right_n.width / 2
+                    if reversed_dir:
+                        arrow_horizontal(draw, edge_right, edge_left, arrow_y)
+                    else:
+                        arrow_horizontal(draw, edge_left, edge_right, arrow_y)
+            last_xs = exit_xs
             last_bottom = y + r["height"]
             y = last_bottom
 
