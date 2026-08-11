@@ -20,11 +20,17 @@ A [Claude Code / Claude Skill](https://docs.claude.com/en/docs/claude-code/skill
 
 ## Install
 
-### As a Claude Skill
+### Via skills.sh
+
+```bash
+npx skills add keyan1603/claude-skill-text-to-png
+```
+
+### As a Claude Skill (manual)
 
 Download [`text-to-png.skill`](./text-to-png.skill) (or clone this repo) and either:
 - drop the `.skill` file into Claude and click **Save skill**, or
-- copy the `text-to-png/` folder into your `~/.claude/skills/` directory.
+- copy the `skills/text-to-png/` folder into your `~/.claude/skills/` directory.
 
 ### Standalone (no Claude required)
 
@@ -32,7 +38,7 @@ Both tools are just Python scripts — you can use them directly:
 
 ```bash
 pip install Pillow
-python text-to-png/scripts/render_text_png.py --text "Hello, world!" --output hello.png
+python skills/text-to-png/scripts/render_text_png.py --text "Hello, world!" --output hello.png
 ```
 
 ## Usage
