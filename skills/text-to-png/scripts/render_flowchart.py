@@ -100,7 +100,6 @@ SIDE_GAP = 50            # horizontal space from the main line to a side-exit no
 SIDE_BRANCH_DROP = 22    # vertical offset from a row's bottom to its side-exit tee point
 LOOP_ROUTE_GAP = 40      # how far a loop-back route extends beyond the diagram's natural edge
 LOOP_BACK_W = 20         # nominal column width reserved for a loop-back branch (just a stub, no box)
-LOOP_STUB_DROP = 18      # vertical drop from the branch arrow start before turning to route back
 
 
 def wrap_text(draw, text, font, max_width):
@@ -493,10 +492,8 @@ class Block:
                 if c["label"]:
                     draw.text((col_cx + 10, bar_y + 4), c["label"], font=fonts.annot, fill=ANNOT_COLOR)
                 if "loop_back" in c:
-                    stub_y = bar_y + LOOP_STUB_DROP
-                    draw.line([(col_cx, bar_y), (col_cx, stub_y)], fill=LINE_COLOR, width=3)
                     route_x = col_cx - LOOP_BACK_W / 2 - LOOP_ROUTE_GAP
-                    pending_loops.append({"from": (col_cx, stub_y), "route_x": route_x, "target_id": c["loop_back"]})
+                    pending_loops.append({"from": (col_cx, bar_y), "route_x": route_x, "target_id": c["loop_back"]})
                 else:
                     arrow_down(draw, col_cx, bar_y, content_top)
                     c["block"].draw(draw, col_cx, content_top, fonts, registry, pending_loops)
