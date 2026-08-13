@@ -132,6 +132,29 @@ Instead, add `"side_exit"` to the row the branch leaves FROM:
 
 The main vertical line continues straight down to the next row exactly as normal; the side-exit tees off partway down that connector to a small labeled box on the right, and doesn't affect the main line's horizontal position at all — so any number of these can stack down a diagram without it drifting sideways.
 
+### Loop-back arrows
+
+Some diagrams cycle — a "continue?" decision point where one branch goes back UP to an earlier step instead of forward, e.g. a debate loop between two agents until a round limit is hit. Don't represent that branch as a dead-end node saying "go back to X" in text; draw the actual arrow back into that earlier box.
+
+First, give the target node an `"id"`:
+
+```json
+{"nodes": [{"type": "box", "id": "debater_for", "title": "debater_for", "subtitle": "(sees against's last statement)"}]}
+```
+
+Then, in the branch that loops back, use `"loop_back": "<id>"` instead of `"rows"`:
+
+```json
+{"type": "branch", "branches": [
+    {"label": "loop (round < MAX_ROUNDS)", "loop_back": "debater_for"},
+    {"label": "done", "rows": [
+        {"nodes": [{"type": "box", "title": "reviewer"}]}
+    ]}
+]}
+```
+
+This routes a line out to the side of the diagram and back up into the target node's left edge with an arrowhead, instead of drawing a box for that branch. It works regardless of how far back the target is — the target just needs to already have been given an `"id"` somewhere earlier in the spec.
+
 ### Workflow
 
 1. Read the ASCII diagram and identify: the linear sequence of steps, which boxes have bullet/paragraph bodies vs. simple labels, where branching happens and whether it reconverges or not, and any side-annotations on arrows.

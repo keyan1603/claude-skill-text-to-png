@@ -9,6 +9,7 @@ A [Claude Code / Claude Skill](https://docs.claude.com/en/docs/claude-code/skill
 ![Example branching flowchart output](./assets/flowchart-branch-example.png)
 ![Example horizontal-chain flowchart output](./assets/flowchart-hchain-example.png)
 ![Example guard-clause flowchart output](./assets/flowchart-sideexit-example.png)
+![Example loop-back flowchart output](./assets/flowchart-loopback-example.png)
 
 ## What it does
 
@@ -132,7 +133,18 @@ For guard-clause style branches — the main flow stays on one straight vertical
  "side_exit": {"label": "blocked", "node": {"type": "plain", "lines": ["Refuse, never touch retrieval or generation"]}}}
 ```
 
-All four example images above were generated from this tool.
+For a branch that loops back to an earlier step instead of moving forward (e.g. a debate/reflection loop that repeats until some condition), give the target node an `"id"`, then use `"loop_back": "<id>"` instead of `"rows"` in the branch that cycles back — it routes an arrow around the side of the diagram into that node's left edge rather than drawing a dead-end box:
+
+```json
+{"nodes": [{"type": "box", "id": "debater_for", "title": "debater_for"}]}
+...
+{"type": "branch", "branches": [
+    {"label": "loop (round < MAX_ROUNDS)", "loop_back": "debater_for"},
+    {"label": "done", "rows": [{"nodes": [{"type": "box", "title": "reviewer"}]}]}
+]}
+```
+
+All five example images above were generated from this tool.
 
 ## License
 

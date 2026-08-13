@@ -98,6 +98,9 @@ BRANCH_STEM = 26        # vertical drop from parent to the branch bar
 BRANCH_ARROW_DROP = 30  # vertical drop from the branch bar into each column
 SIDE_GAP = 50            # horizontal space from the main line to a side-exit node
 SIDE_BRANCH_DROP = 22    # vertical offset from a row's bottom to its side-exit tee point
+LOOP_ROUTE_GAP = 40      # how far a loop-back route extends beyond the diagram's natural edge
+LOOP_BACK_W = 20         # nominal column width reserved for a loop-back branch (just a stub, no box)
+LOOP_STUB_DROP = 18      # vertical drop from the branch arrow start before turning to route back
 
 
 def wrap_text(draw, text, font, max_width):
@@ -358,7 +361,10 @@ class Block:
         self.branch_children = []
         if self.branch:
             for b in self.branch["branches"]:
-                self.branch_children.append({"label": b.get("label"), "block": Block(b["rows"], draw, fonts)})
+                if "loop_back" in b:
+                    self.branch_children.append({"label": b.get("label"), "loop_back": b["loop_back"]})
+                else:
+                    self.branch_children.append({"label": b.get("label"), "block": Block(b["rows"], draw, fonts)})
 
         linear_width = max((r["width"] for r in self.linear), default=0)
         linear_height = 0
@@ -372,19 +378,30 @@ class Block:
             if r["side_exit"]:
                 self.right_extra = max(self.right_extra, SIDE_GAP + r["side_exit"]["node"].width)
 
+        self.left_extra = 0
+
         if self.branch_children:
-            branch_widths = [c["block"].width + c["block"].right_extra for c in self.branch_children]
+            branch_widths = [
+                (LOOP_BACK_W if "loop_back" in c else c["block"].width + c["block"].right_extra)
+                for c in self.branch_children
+            ]
             branch_section_width = sum(branch_widths) + COLUMN_GAP * (len(self.branch_children) - 1)
-            branch_section_height = max(c["block"].height for c in self.branch_children)
+            branch_section_height = max(
+                (c["block"].height for c in self.branch_children if "block" in c), default=0
+            )
             fanout_height = BRANCH_STEM + BRANCH_ARROW_DROP
             self.width = max(linear_width, branch_section_width)
             self.height = linear_height + (fanout_height if self.linear else 0) + branch_section_height
-            self.right_extra = max(self.right_extra, self.branch_children[-1]["block"].right_extra)
+            non_loop_right_extras = [c["block"].right_extra for c in self.branch_children if "block" in c]
+            if non_loop_right_extras:
+                self.right_extra = max(self.right_extra, non_loop_right_extras[-1])
+            if any("loop_back" in c for c in self.branch_children):
+                self.left_extra = max(self.left_extra, LOOP_ROUTE_GAP + max(0, branch_section_width - self.width) / 2)
         else:
             self.width = linear_width
             self.height = linear_height
 
-    def draw(self, draw, cx, top, fonts):
+    def draw(self, draw, cx, top, fonts, registry, pending_loops):
         y = top
         last_xs = None
         for i, r in enumerate(self.linear):
@@ -416,6 +433,9 @@ class Block:
                 draw_connector(draw, last_xs, last_bottom, entry_xs, y, r["label"], fonts)
             for n, x in zip(display_nodes, positions):
                 draw_node(draw, n, x, y, fonts)
+                node_id = n.spec.get("id")
+                if node_id:
+                    registry[node_id] = (x, y, y + n.height, n.width)
             if r["hchain"]:
                 arrow_y = y + 14
                 for j in range(len(display_nodes) - 1):
@@ -452,13 +472,17 @@ class Block:
             draw.line([(parent_x, parent_bottom), (parent_x, bar_y)], fill=LINE_COLOR, width=3)
 
             n = len(self.branch_children)
-            eff_widths = [c["block"].width + c["block"].right_extra for c in self.branch_children]
+            eff_widths = [
+                LOOP_BACK_W if "loop_back" in c else c["block"].width + c["block"].right_extra
+                for c in self.branch_children
+            ]
+            own_widths = [LOOP_BACK_W if "loop_back" in c else c["block"].width for c in self.branch_children]
             total_w = sum(eff_widths) + COLUMN_GAP * (n - 1)
             start_x = cx - total_w / 2
             col_positions = []
             x = start_x
-            for c, eff_w in zip(self.branch_children, eff_widths):
-                col_cx = x + c["block"].width / 2
+            for c, eff_w, own_w in zip(self.branch_children, eff_widths, own_widths):
+                col_cx = x + own_w / 2
                 col_positions.append(col_cx)
                 x += eff_w + COLUMN_GAP
 
@@ -466,10 +490,29 @@ class Block:
 
             content_top = bar_y + BRANCH_ARROW_DROP
             for c, col_cx in zip(self.branch_children, col_positions):
-                arrow_down(draw, col_cx, bar_y, content_top)
                 if c["label"]:
                     draw.text((col_cx + 10, bar_y + 4), c["label"], font=fonts.annot, fill=ANNOT_COLOR)
-                c["block"].draw(draw, col_cx, content_top, fonts)
+                if "loop_back" in c:
+                    stub_y = bar_y + LOOP_STUB_DROP
+                    draw.line([(col_cx, bar_y), (col_cx, stub_y)], fill=LINE_COLOR, width=3)
+                    route_x = col_cx - LOOP_BACK_W / 2 - LOOP_ROUTE_GAP
+                    pending_loops.append({"from": (col_cx, stub_y), "route_x": route_x, "target_id": c["loop_back"]})
+                else:
+                    arrow_down(draw, col_cx, bar_y, content_top)
+                    c["block"].draw(draw, col_cx, content_top, fonts, registry, pending_loops)
+
+
+def draw_loop_back_route(draw, from_xy, route_x, target_pos):
+    """Route a line from a branch's stub point out to route_x, up/down to the
+    target node's vertical center, then right into the target's left edge."""
+    from_x, from_y = from_xy
+    target_cx, target_top, target_bottom, target_width = target_pos
+    target_mid_y = (target_top + target_bottom) / 2
+    target_left = target_cx - target_width / 2
+
+    draw.line([(from_x, from_y), (route_x, from_y)], fill=LINE_COLOR, width=3)
+    draw.line([(route_x, from_y), (route_x, target_mid_y)], fill=LINE_COLOR, width=3)
+    arrow_horizontal(draw, route_x, target_left, target_mid_y)
 
 
 def render(spec, output_path):
@@ -478,13 +521,22 @@ def render(spec, output_path):
     fonts = Fonts()
 
     root = Block(spec["rows"], ddraw, fonts)
-    cx = MARGIN + root.width / 2
-    canvas_w = root.width + MARGIN * 2 + root.right_extra
+    cx = MARGIN + root.left_extra + root.width / 2
+    canvas_w = root.width + MARGIN * 2 + root.right_extra + root.left_extra
     canvas_h = root.height + MARGIN * 2
 
     img = Image.new("RGB", (int(canvas_w), int(canvas_h)), BG)
     draw = ImageDraw.Draw(img)
-    root.draw(draw, cx, MARGIN, fonts)
+    registry = {}
+    pending_loops = []
+    root.draw(draw, cx, MARGIN, fonts, registry, pending_loops)
+
+    for loop in pending_loops:
+        target_pos = registry.get(loop["target_id"])
+        if target_pos is None:
+            print(f"Warning: loop_back target '{loop['target_id']}' not found (no node with that \"id\")", file=sys.stderr)
+            continue
+        draw_loop_back_route(draw, loop["from"], loop["route_x"], target_pos)
 
     img.save(output_path)
     print(f"Saved {int(canvas_w)}x{int(canvas_h)} to {output_path}")
