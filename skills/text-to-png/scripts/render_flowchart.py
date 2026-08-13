@@ -380,22 +380,47 @@ class Block:
         self.left_extra = 0
 
         if self.branch_children:
-            branch_widths = [
-                (LOOP_BACK_W if "loop_back" in c else c["block"].width + c["block"].right_extra)
+            # A child's effective footprint for spacing purposes includes its
+            # own left/right_extra (e.g. a nested loop_back's route running
+            # alongside it) so a sibling column never overlaps that space.
+            eff_widths = [
+                (LOOP_BACK_W if "loop_back" in c
+                 else c["block"].width + c["block"].left_extra + c["block"].right_extra)
                 for c in self.branch_children
             ]
-            branch_section_width = sum(branch_widths) + COLUMN_GAP * (len(self.branch_children) - 1)
+            own_widths = [LOOP_BACK_W if "loop_back" in c else c["block"].width for c in self.branch_children]
+            branch_section_width = sum(eff_widths) + COLUMN_GAP * (len(self.branch_children) - 1)
             branch_section_height = max(
                 (c["block"].height for c in self.branch_children if "block" in c), default=0
             )
             fanout_height = BRANCH_STEM + BRANCH_ARROW_DROP
             self.width = max(linear_width, branch_section_width)
             self.height = linear_height + (fanout_height if self.linear else 0) + branch_section_height
-            non_loop_right_extras = [c["block"].right_extra for c in self.branch_children if "block" in c]
-            if non_loop_right_extras:
-                self.right_extra = max(self.right_extra, non_loop_right_extras[-1])
-            if any("loop_back" in c for c in self.branch_children):
-                self.left_extra = max(self.left_extra, LOOP_ROUTE_GAP + max(0, branch_section_width - self.width) / 2)
+
+            # Relative column x-offsets from this block's own center, using the
+            # exact same layout math draw() uses, so we can tell — purely from
+            # widths, before any pixel is drawn — which side of center each
+            # loop-back column (direct OR nested arbitrarily deep) ends up on,
+            # and reserve exactly the space its route needs on THAT side.
+            rel_x = -branch_section_width / 2
+            for c, eff_w, own_w in zip(self.branch_children, eff_widths, own_widths):
+                pre_pad = c["block"].left_extra if "block" in c else 0
+                col_rel = rel_x + pre_pad + own_w / 2
+                if "loop_back" in c:
+                    if col_rel < 0:
+                        c["side"] = "left"
+                        route_dist = -col_rel + own_w / 2 + LOOP_ROUTE_GAP
+                        self.left_extra = max(self.left_extra, route_dist - self.width / 2)
+                    else:
+                        c["side"] = "right"
+                        route_dist = col_rel + own_w / 2 + LOOP_ROUTE_GAP
+                        self.right_extra = max(self.right_extra, route_dist - self.width / 2)
+                else:
+                    child_left_edge = rel_x
+                    child_right_edge = rel_x + eff_w
+                    self.left_extra = max(self.left_extra, -child_left_edge - self.width / 2)
+                    self.right_extra = max(self.right_extra, child_right_edge - self.width / 2)
+                rel_x += eff_w + COLUMN_GAP
         else:
             self.width = linear_width
             self.height = linear_height
@@ -472,7 +497,8 @@ class Block:
 
             n = len(self.branch_children)
             eff_widths = [
-                LOOP_BACK_W if "loop_back" in c else c["block"].width + c["block"].right_extra
+                (LOOP_BACK_W if "loop_back" in c
+                 else c["block"].width + c["block"].left_extra + c["block"].right_extra)
                 for c in self.branch_children
             ]
             own_widths = [LOOP_BACK_W if "loop_back" in c else c["block"].width for c in self.branch_children]
@@ -481,7 +507,8 @@ class Block:
             col_positions = []
             x = start_x
             for c, eff_w, own_w in zip(self.branch_children, eff_widths, own_widths):
-                col_cx = x + own_w / 2
+                pre_pad = c["block"].left_extra if "block" in c else 0
+                col_cx = x + pre_pad + own_w / 2
                 col_positions.append(col_cx)
                 x += eff_w + COLUMN_GAP
 
@@ -492,24 +519,32 @@ class Block:
                 if c["label"]:
                     draw.text((col_cx + 10, bar_y + 4), c["label"], font=fonts.annot, fill=ANNOT_COLOR)
                 if "loop_back" in c:
-                    route_x = col_cx - LOOP_BACK_W / 2 - LOOP_ROUTE_GAP
-                    pending_loops.append({"from": (col_cx, bar_y), "route_x": route_x, "target_id": c["loop_back"]})
+                    # route_x is resolved later, globally, in render() — not
+                    # locally here — so a nested loop-back's vertical run
+                    # clears ALL ancestor content, not just its immediate
+                    # parent block (a local offset can still cut through an
+                    # unrelated sibling row several levels up).
+                    pending_loops.append({
+                        "from": (col_cx, bar_y),
+                        "target_id": c["loop_back"], "side": c["side"],
+                    })
                 else:
                     arrow_down(draw, col_cx, bar_y, content_top)
                     c["block"].draw(draw, col_cx, content_top, fonts, registry, pending_loops)
 
 
-def draw_loop_back_route(draw, from_xy, route_x, target_pos):
+def draw_loop_back_route(draw, from_xy, route_x, target_pos, side):
     """Route a line from a branch's stub point out to route_x, up/down to the
-    target node's vertical center, then right into the target's left edge."""
+    target node's vertical center, then into the target's near edge — the
+    left edge if approaching from the left, the right edge if from the right."""
     from_x, from_y = from_xy
     target_cx, target_top, target_bottom, target_width = target_pos
     target_mid_y = (target_top + target_bottom) / 2
-    target_left = target_cx - target_width / 2
+    target_edge = (target_cx - target_width / 2) if side == "left" else (target_cx + target_width / 2)
 
     draw.line([(from_x, from_y), (route_x, from_y)], fill=LINE_COLOR, width=3)
     draw.line([(route_x, from_y), (route_x, target_mid_y)], fill=LINE_COLOR, width=3)
-    arrow_horizontal(draw, route_x, target_left, target_mid_y)
+    arrow_horizontal(draw, route_x, target_edge, target_mid_y)
 
 
 def render(spec, output_path):
@@ -528,12 +563,15 @@ def render(spec, output_path):
     pending_loops = []
     root.draw(draw, cx, MARGIN, fonts, registry, pending_loops)
 
+    left_route_x = MARGIN
+    right_route_x = canvas_w - MARGIN
     for loop in pending_loops:
         target_pos = registry.get(loop["target_id"])
         if target_pos is None:
             print(f"Warning: loop_back target '{loop['target_id']}' not found (no node with that \"id\")", file=sys.stderr)
             continue
-        draw_loop_back_route(draw, loop["from"], loop["route_x"], target_pos)
+        route_x = left_route_x if loop["side"] == "left" else right_route_x
+        draw_loop_back_route(draw, loop["from"], route_x, target_pos, loop["side"])
 
     img.save(output_path)
     print(f"Saved {int(canvas_w)}x{int(canvas_h)} to {output_path}")
